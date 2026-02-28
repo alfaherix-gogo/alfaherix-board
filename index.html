@@ -2,27 +2,17 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<!-- iOS Safariのページズーム暴走/ダブルタップズームを防ぐ -->
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>α−HERIX Board</title>
-
 <style>
   :root{
-    --engine:#9a3a3a;      /* 少し薄いエンジ */
+    /* ③ 少し薄いエンジ */
+    --engine:#9a3a3a;
     --engine-dark:#7b1b1b;
     --border:#ddd;
     --bgbar:#fafafa;
   }
   body{ margin:0; font-family: system-ui, -apple-system; }
-
-  /* ===== iPadの長押し「コピー/調べる」などを出さない（強制） ===== */
-  html, body, #stage, #toolbar, canvas,
-  button, select, input, label, span, div {
-    -webkit-touch-callout: none !important;
-    -webkit-user-select: none !important;
-    user-select: none !important;
-  }
-  *{ -webkit-tap-highlight-color: rgba(0,0,0,0); }
 
   .bar{
     display:flex; flex-wrap:wrap; gap:10px; align-items:center;
@@ -79,9 +69,10 @@
   .swatch::after{ content:""; display:block; width:100%; height:100%; border-radius:999px; background: var(--c); }
 
   .stage{ position:relative; width:100vw; }
-  canvas{ position:absolute; left:0; top:0; touch-action:none; } /* gestureは自前 */
+  canvas{ position:absolute; left:0; top:0; touch-action:none; }
   #hit{ background:transparent; }
 
+  /* ② ツールバー表示（隠したときだけ出す） */
   #showToolbarFloating{
     position:fixed;
     top:10px; right:10px;
@@ -90,7 +81,6 @@
   }
 </style>
 </head>
-
 <body>
 
 <button id="showToolbarFloating" class="secondary">ツールバー表示</button>
@@ -113,7 +103,7 @@
 
   <div class="sep"></div>
 
-  <!-- 色 → ペン太さ → 消しゴム太さ -->
+  <!-- ⑤ 色→ペン太さ→消しゴム太さ -->
   <span class="pill">色</span>
   <div class="palette" id="palette">
     <button class="swatch" data-color="#000000" style="--c:#000000" title="黒"></button>
@@ -122,6 +112,7 @@
     <button class="swatch" data-color="#1f8a3b" style="--c:#1f8a3b" title="緑"></button>
     <button class="swatch" data-color="#ff8a00" style="--c:#ff8a00" title="オレンジ"></button>
     <button class="swatch" data-color="#7b1fa2" style="--c:#7b1fa2" title="紫"></button>
+    <!-- 濃いピンク（必須） -->
     <button class="swatch" data-color="#c2185b" style="--c:#c2185b" title="濃いピンク"></button>
   </div>
   <input id="color" type="color" value="#000000" title="カスタム色">
@@ -134,7 +125,7 @@
 
   <div class="sep"></div>
 
-  <!-- スタンプ -->
+  <!-- ⑥ 先頭は「スタンプ」 -->
   <select id="stampSelect" title="スタンプ選択">
     <option value="none">スタンプ</option>
     <option value="circle">○</option>
@@ -169,6 +160,7 @@
 
   <div class="sep"></div>
 
+  <!-- ⑦ テンプレは1つ -->
   <span class="pill" id="gradeLabel">テンプレ: なし</span>
   <select id="templateSelect" title="テンプレ">
     <option value="0">テンプレ</option>
@@ -191,6 +183,7 @@
   <button id="nextPage">▶</button>
   <button id="newPage">＋</button>
 
+  <!-- ① -->
   <button id="deletePage" class="secondary" title="このページを削除">🗑 このページを削除</button>
 
   <div class="sep"></div>
@@ -198,6 +191,7 @@
   <span class="pill" id="viewLabel">Zoom: 100%</span>
   <button id="resetView" class="secondary">表示リセット</button>
 
+  <!-- ② -->
   <button id="toggleToolbar" class="secondary">ツールバー非表示</button>
 </div>
 
@@ -210,7 +204,7 @@
 
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
-  import { getDatabase, ref, set, onValue, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+  import { getFirestore, doc, setDoc, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyB0XWP8mNvpFR_Xo71eAoQVSE8a2FFQKAA",
@@ -221,10 +215,27 @@
     appId: "1:1066686621657:web:cc2dc2840811e060801bc8"
   };
 
+  // --- Firebase ---
   const app = initializeApp(firebaseConfig);
-  const db = getDatabase(app);
+  const db = getFirestore(app);
+  const myClientId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
+  let unsub = null;
+  let suppressRemoteApply = false;
 
-  // ===== DOM refs =====
+  // ④ 体感即時：移動中は短間隔、終端は即保存
+  const MOVE_SAVE_DELAY_MS = 60;
+  let saveTimer = null;
+  let lastSavedHash = "";
+
+  function stableStringify(obj){ return JSON.stringify(obj); }
+  function hashState(state){
+    const s = stableStringify(state);
+    let h = 0;
+    for(let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) >>> 0;
+    return String(h);
+  }
+
+  // --- DOM refs ---
   const toolbar = document.getElementById("toolbar");
   const toggleToolbarBtn = document.getElementById("toggleToolbar");
   const showToolbarFloating = document.getElementById("showToolbarFloating");
@@ -265,35 +276,7 @@
   const l1Ctx = l1Canvas.getContext("2d");
   const l2Ctx = l2Canvas.getContext("2d");
 
-  // ===== iOS Safari：コピー/調べる & ページズーム暴走を強制抑止（ツールバー/キャンバス両方） =====
-  // ピンチの「ページ側ズーム」を止める
-  document.addEventListener("gesturestart", (e) => e.preventDefault(), { passive: false });
-  document.addEventListener("gesturechange", (e) => e.preventDefault(), { passive: false });
-  document.addEventListener("gestureend", (e) => e.preventDefault(), { passive: false });
-
-  // 長押しメニュー/文字選択を止める
-  document.addEventListener("contextmenu", (e)=>e.preventDefault());
-  document.addEventListener("selectstart", (e)=>e.preventDefault());
-
-  // ダブルタップズームを止める（特にツールバーで発生しがち）
-  function preventDoubleTapZoom(targetEl){
-    let lastTouchEnd = 0;
-    targetEl.addEventListener("touchend", (e)=>{
-      const now = Date.now();
-      if(now - lastTouchEnd < 300){
-        e.preventDefault();
-      }
-      lastTouchEnd = now;
-    }, { passive:false });
-  }
-  preventDoubleTapZoom(toolbar);
-  preventDoubleTapZoom(stage);
-
-  // キャンバスはページスクロール等が混ざらないように強制
-  hitCanvas.addEventListener("touchstart", (e)=>e.preventDefault(), { passive:false });
-  hitCanvas.addEventListener("touchmove",  (e)=>e.preventDefault(), { passive:false });
-
-  // ===== toolbar show/hide =====
+  // --- toolbar show/hide (②) ---
   function hideToolbar(){
     toolbar.classList.add("hidden");
     showToolbarFloating.style.display="block";
@@ -307,7 +290,7 @@
   toggleToolbarBtn.onclick = hideToolbar;
   showToolbarFloating.onclick = showToolbar;
 
-  // ===== Class =====
+  // --- class ---
   const CLASS_LIST = ["Serino","Kanzan","Kie","Koreyama"];
   function getClassFromURL(){
     const p = new URLSearchParams(location.search);
@@ -331,7 +314,49 @@
   }
   classSelect.onchange = (e)=> setClassName(e.target.value, true);
 
-  // ===== Assets =====
+  function startListening(){
+    if(unsub) unsub();
+    const ref = doc(db, "boards", currentClass);
+    unsub = onSnapshot(ref, (snap)=>{
+      if(!snap.exists()) return;
+      const data = snap.data();
+      if(!data || !data.state) return;
+      if(data.updatedBy === myClientId) return;
+      suppressRemoteApply = true;
+      try{
+        importState(data.state);
+        lastSavedHash = hashState(data.state);
+        syncLabel.textContent = "Sync: on";
+      } finally {
+        suppressRemoteApply = false;
+      }
+    }, (err)=>{
+      syncLabel.textContent = "Sync: error";
+      console.error(err);
+    });
+  }
+
+  async function writeStateNow(){
+    try{
+      const state = exportState();
+      const h = hashState(state);
+      if(h === lastSavedHash) return;
+      lastSavedHash = h;
+
+      const ref = doc(db, "boards", currentClass);
+      await setDoc(ref, { state, updatedAt: serverTimestamp(), updatedBy: myClientId }, { merge:true });
+      syncLabel.textContent = "Sync: on";
+    }catch(e){
+      syncLabel.textContent = "Sync: error";
+      console.error(e);
+    }
+  }
+  function saveStateDebounced(delayMs=MOVE_SAVE_DELAY_MS){
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(()=>{ writeStateNow(); }, delayMs);
+  }
+
+  // --- assets ---
   const charImg1 = new Image();
   const charImg2 = new Image();
   let charReady1=false, charReady2=false;
@@ -340,7 +365,7 @@
   charImg1.src="character1.png";
   charImg2.src="character2.png";
 
-  // ===== Date =====
+  // --- date ---
   function todayString(){
     const d = new Date();
     return d.getFullYear()
@@ -348,7 +373,7 @@
       + String(d.getDate()).padStart(2,"0");
   }
 
-  // ===== Board state =====
+  // --- state (pages / layers) ---
   const pages = [{
     bgMode:"plain",
     grade:"0",
@@ -365,7 +390,7 @@
   function ctxForLayer(layer){ return layer===1 ? l1Ctx : l2Ctx; }
   function canvasForLayer(layer){ return layer===1 ? l1Canvas : l2Canvas; }
 
-  // ===== Palette =====
+  // --- palette (⑤) ---
   function setColor(hex){
     colorEl.value = hex;
     [...palette.querySelectorAll(".swatch")].forEach(btn=>{
@@ -385,7 +410,7 @@
   });
   setColor("#000000");
 
-  // ===== View (pan/zoom) =====
+  // --- view (pan/zoom) ---
   let view = { zoom:1.0, panX:0, panY:0 };
   function clampZoom(z){ return Math.min(5, Math.max(0.25, z)); }
   function screenToWorld(pt){
@@ -399,8 +424,6 @@
   }
   document.getElementById("resetView").onclick=()=>{
     view.zoom=1.0; view.panX=0; view.panY=0;
-    // iOSの表示ズレ対策：強制リサイズ→再描画
-    resize();
     redrawAll();
   };
 
@@ -430,10 +453,11 @@
   let panDrag=false;
   let panStart={x:0,y:0, panX:0, panY:0};
 
-  // iPad pinch zoom (2 fingers) - アプリ内ズーム
+  // iPad pinch zoom (2 fingers)
   let pinchStart=null;
   hitCanvas.addEventListener("touchstart",(e)=>{
     if(e.touches.length===2){
+      e.preventDefault();
       const rect = hitCanvas.getBoundingClientRect();
       const t0={x:e.touches[0].clientX-rect.left, y:e.touches[0].clientY-rect.top};
       const t1={x:e.touches[1].clientX-rect.left, y:e.touches[1].clientY-rect.top};
@@ -444,6 +468,7 @@
   }, {passive:false});
   hitCanvas.addEventListener("touchmove",(e)=>{
     if(pinchStart && e.touches.length===2){
+      e.preventDefault();
       const rect = hitCanvas.getBoundingClientRect();
       const t0={x:e.touches[0].clientX-rect.left, y:e.touches[0].clientY-rect.top};
       const t1={x:e.touches[1].clientX-rect.left, y:e.touches[1].clientY-rect.top};
@@ -465,7 +490,7 @@
     if(e.touches.length<2) pinchStart=null;
   }, {passive:false});
 
-  // ===== Background =====
+  // --- background ---
   function drawBackground(ctx,w,h,page){
     ctx.clearRect(0,0,w,h);
     ctx.fillStyle="#fff";
@@ -510,6 +535,7 @@
     }
   }
 
+  // --- draw strokes (world coords) ---
   function drawPath(ctx,s){
     if(!s.points || !s.points.length) return;
     ctx.save();
@@ -607,6 +633,9 @@
         ctx.save(); ctx.globalAlpha=0.95;
         ctx.drawImage(img, x-w/2, y-h/2, w, h);
         ctx.restore();
+      } else {
+        ctx.font=`800 ${size}px system-ui, -apple-system, sans-serif`;
+        ctx.fillText("?",x,y);
       }
     }
     ctx.restore();
@@ -630,7 +659,7 @@
     updateViewLabel();
   }
 
-  // ===== UI helpers =====
+  // --- UI helpers ---
   function updateLayerUI(){
     layerLabel.textContent = `Layer: ${activeLayer}`;
     layer1Btn.classList.toggle("active", activeLayer===1);
@@ -655,11 +684,11 @@
     setSelectedSecondary(bgBtns, bg==="plain"?"bgPlain":bg==="grid"?"bgGrid":"bgLine");
   }
 
-  // ===== Resize（iOSでズーム後に表示が縮む現象を抑止） =====
+  // --- resize ---
   function resize(){
     const barH = toolbar.classList.contains("hidden") ? 0 : toolbar.getBoundingClientRect().height;
-    const w = Math.round(window.innerWidth);
-    const h = Math.round(window.innerHeight - Math.ceil(barH));
+    const w = window.innerWidth;
+    const h = window.innerHeight - Math.ceil(barH);
     stage.style.height = h+"px";
 
     [bgCanvas,l1Canvas,l2Canvas,hitCanvas].forEach(c=>{
@@ -675,13 +704,8 @@
     syncSelectedUI();
   }
   window.addEventListener("resize", resize);
-  // iOSはvisualViewportがズレることがあるので追従（ある環境で効く）
-  if(window.visualViewport){
-    window.visualViewport.addEventListener("resize", ()=>{ resize(); }, {passive:true});
-    window.visualViewport.addEventListener("scroll", ()=>{ resize(); }, {passive:true});
-  }
 
-  // ===== Mode / Layer =====
+  // --- modes / layer ---
   function setMode(m){
     mode=m;
     penBtn.classList.toggle("active", mode==="pen");
@@ -696,7 +720,7 @@
   layer1Btn.onclick=()=>{ activeLayer=1; updateLayerUI(); if(!suppressRemoteApply) saveStateDebounced(); };
   layer2Btn.onclick=()=>{ activeLayer=2; updateLayerUI(); if(!suppressRemoteApply) saveStateDebounced(); };
 
-  // ===== Pages =====
+  // --- page controls ---
   document.getElementById("prevPage").onclick=()=>{
     if(pageIndex<=0) return;
     pageIndex--;
@@ -724,7 +748,7 @@
     if(!suppressRemoteApply) writeStateNow();
   };
 
-  // ===== Background =====
+  // --- background buttons ---
   document.getElementById("bgPlain").onclick=()=>{
     curPage().bgMode="plain"; redrawAll(); setSelectedSecondary(bgBtns,"bgPlain");
     if(!suppressRemoteApply) writeStateNow();
@@ -738,7 +762,7 @@
     if(!suppressRemoteApply) writeStateNow();
   };
 
-  // ===== Template =====
+  // --- template (⑦) ---
   templateSelect.onchange=(e)=>{
     const v = e.target.value;
     curPage().grade = (v==="0") ? "0" : v;
@@ -747,7 +771,7 @@
     if(!suppressRemoteApply) writeStateNow();
   };
 
-  // ===== Undo / Clear =====
+  // --- undo / clear ---
   document.getElementById("undoBtn").onclick=()=>{
     activeStrokes().pop();
     redrawLayer(activeLayer);
@@ -760,7 +784,7 @@
     if(!suppressRemoteApply) writeStateNow();
   };
 
-  // ===== Stamp drag =====
+  // --- stamp drag ---
   let draggingStamp=null;
   let dragOffset={x:0,y:0};
 
@@ -799,7 +823,7 @@
     if(!suppressRemoteApply) saveStateDebounced();
   }
 
-  // ===== Drawing (Apple Pencil only) =====
+  // --- drawing (Apple Pencil only) ---
   function shouldDraw(e){ return e.pointerType === "pen"; }
   let currentPath=null;
 
@@ -853,6 +877,7 @@
   }
 
   hitCanvas.addEventListener("pointerdown",(e)=>{
+    // PC pan
     if(spaceDown && e.pointerType==="mouse"){
       panDrag=true;
       const pos=getScreenPosFromEvent(e);
@@ -891,10 +916,10 @@
     endDraw();
   });
 
-  // ===== Export/Import for sync =====
+  // --- export/import for sync ---
   function exportState(){
     return {
-      version: 10,
+      version: 4,
       pages,
       pageIndex,
       activeLayer,
@@ -936,79 +961,7 @@
     redrawAll();
   }
 
-  // ===== RTDB Sync（授業安定版） =====
-  const myClientId = (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
-  let unsubRtdb = null;
-  let suppressRemoteApply = false;
-
-  // 授業向け：これくらいが安定（体感ほぼリアルタイム）
-  const MOVE_SAVE_DELAY_MS = 220;
-  let saveTimer = null;
-  let lastSavedHash = "";
-
-  function stableStringify(obj){ return JSON.stringify(obj); }
-  function hashState(state){
-    const s = stableStringify(state);
-    let h = 0;
-    for(let i=0;i<s.length;i++) h = (h*31 + s.charCodeAt(i)) >>> 0;
-    return String(h);
-  }
-
-  function boardRef(){
-    return ref(db, `boards/${currentClass}`);
-  }
-
-  function startListening(){
-    if(unsubRtdb){ unsubRtdb(); unsubRtdb = null; }
-
-    const r = boardRef();
-    unsubRtdb = onValue(r, (snap)=>{
-      const data = snap.val();
-      if(!data || !data.state) return;
-
-      if(data.updatedBy && data.updatedBy === myClientId) return;
-
-      suppressRemoteApply = true;
-      try{
-        importState(data.state);
-        lastSavedHash = hashState(data.state);
-        syncLabel.textContent = "Sync: on";
-      } finally {
-        suppressRemoteApply = false;
-      }
-    }, (err)=>{
-      syncLabel.textContent = "Sync: error";
-      console.error(err);
-    });
-  }
-
-  async function writeStateNow(){
-    try{
-      const state = exportState();
-      const h = hashState(state);
-      if(h === lastSavedHash) return;
-      lastSavedHash = h;
-
-      await set(boardRef(), {
-        state,
-        updatedAt: serverTimestamp(),
-        updatedBy: myClientId
-      });
-
-      syncLabel.textContent = "Sync: on";
-    }catch(e){
-      syncLabel.textContent = "Sync: retry...";
-      console.error(e);
-      setTimeout(()=>{ writeStateNow().catch(()=>{}); }, 800);
-    }
-  }
-
-  function saveStateDebounced(delayMs = MOVE_SAVE_DELAY_MS){
-    clearTimeout(saveTimer);
-    saveTimer = setTimeout(()=>{ writeStateNow(); }, delayMs);
-  }
-
-  // ===== PNG =====
+  // --- PNG (安定優先：現在のページのみ / 全ページ個別 / 連結) ---
   function safeName(str){ return String(str).replace(/[\\\/:*?"<>|]/g, "").replace(/\s+/g,"_"); }
   function templatePart(page){
     if(!page || page.grade==="0") return "";
@@ -1050,6 +1003,8 @@
   }
 
   function drawStamp_NoView(ctx,s){
+    // 画面出力は簡易：背景/線/基本スタンプ
+    // （キャラ画像・朝学ラベルも対応）
     const x=s.x,y=s.y, t=s.stampType, size=s.stampSize||56;
     ctx.save();
     ctx.fillStyle=s.color; ctx.strokeStyle=s.color;
@@ -1190,18 +1145,16 @@
     }catch(e){ alert(e.message||String(e)); }
   };
 
-  // ===== Init =====
+  // --- init ---
   setClassName(currentClass, true);
   setMode("pen");
   activeLayer=1;
-
   updateLayerUI();
   updatePageLabel();
   updateGradeLabel();
   syncSelectedUI();
   updateViewLabel();
   resize();
-
   syncLabel.textContent="Sync: on";
 </script>
 </body>
