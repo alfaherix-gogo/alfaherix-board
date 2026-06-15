@@ -353,6 +353,9 @@
   let activeLayer = 1;
   let mode = "pen";
 
+  // ズーム情報の送信モード判定フラグ
+  let isTransmittingView = false;
+
   function activeStrokes(){ return activeLayer===1 ? curPage().strokes1 : curPage().strokes2; }
   function ctxForLayer(layer){ return layer===1 ? l1Ctx : l2Ctx; }
   function canvasForLayer(layer){ return layer===1 ? l1Canvas : l2Canvas; }
@@ -393,6 +396,7 @@
     view.zoom=1.0; view.panX=0; view.panY=0;
     resize();   // ← iOSで縮みっぱなしを戻す用
     redrawAll();
+    if(isTransmittingView) saveStateDebounced(); // 先生のリセットを同期
   };
 
   function getScreenPosFromEvent(e){
@@ -411,6 +415,11 @@
     view.panX += (mouse.x - afterScreen.x);
     view.panY += (mouse.y - afterScreen.y);
     redrawAll();
+
+    // 先生（送信側）のホイールズーム時のみ、間引いて送信
+    if (isTransmittingView) {
+      saveStateDebounced(150);
+    }
   }, {passive:false});
 
   // PC pan: Space+drag
@@ -434,6 +443,11 @@
     }
   }, {passive:false});
   hitCanvas.addEventListener("touchmove",(e)=>{
+    // 生徒（ペン非保持）の2指ピンチ操作は無効化し、先生の画面に強制固定する
+    if (e.touches.length === 2 && !isTransmittingView) {
+      return e.preventDefault();
+    }
+
     if(pinchStart && e.touches.length===2){
       const rect = hitCanvas.getBoundingClientRect();
       const t0={x:e.touches[0].clientX-rect.left, y:e.touches[0].clientY-rect.top};
@@ -450,6 +464,11 @@
       view.panY += (mid.y - afterScreen.y);
 
       redrawAll();
+
+      // 先生のピンチズーム時のみ、間引いて送信
+      if (isTransmittingView) {
+        saveStateDebounced(150);
+      }
     }
   }, {passive:false});
   hitCanvas.addEventListener("touchend",(e)=>{
@@ -851,6 +870,10 @@
     }
     if(!shouldDraw(e)) return;
     e.preventDefault();
+
+    // Apple Pencilで画面に触れたデバイスを「送信モード（先生）」にする
+    isTransmittingView = true;
+
     hitCanvas.setPointerCapture(e.pointerId);
     startDraw(e);
   });
@@ -861,6 +884,7 @@
       view.panX = panStart.panX + (pos.x - panStart.x);
       view.panY = panStart.panY + (pos.y - panStart.y);
       redrawAll();
+      if(isTransmittingView) saveStateDebounced(150); // 先生のパンドラッグ移動を同期
       return;
     }
     if(!shouldDraw(e)) return;
@@ -883,8 +907,8 @@
 
   // ===== Export/Import for sync =====
   function exportState(){
-    return {
-      version: 11,
+    const res = {
+      version: 14, // 同期オブジェクト構造変更につきバージョンをインクリメント
       pages,
       pageIndex,
       activeLayer,
@@ -897,6 +921,16 @@
         stampSize: +stampSizeEl.value
       }
     };
+
+    // 自分が「先生（ペン保持）」である時のみ、ズーム位置をFirebaseに載せる
+    if (isTransmittingView) {
+      res.view = {
+        zoom: view.zoom,
+        panX: view.panX,
+        panY: view.panY
+      };
+    }
+    return res;
   }
 
   function importState(state){
@@ -915,6 +949,13 @@
       eraserSizeEl.value = state.ui.eraserSize ?? eraserSizeEl.value;
       stampSelect.value = state.ui.stampType ?? stampSelect.value;
       stampSizeEl.value = state.ui.stampSize ?? stampSizeEl.value;
+    }
+
+    // 自分が「生徒（指操作）」であり、データ側に先生のズーム情報があれば強制追従させる
+    if (!isTransmittingView && state.view) {
+      view.zoom = state.view.zoom ?? 1.0;
+      view.panX = state.view.panX ?? 0;
+      view.panY = state.view.panY ?? 0;
     }
 
     setMode(mode);
